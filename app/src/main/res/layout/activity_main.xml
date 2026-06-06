@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The GLSurfaceView sits behind the readout. ARCore needs a GL surface to
+     drive frames; on the emulator (simulated provider) it stays blank. -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <android.opengl.GLSurfaceView
+        android:id="@+id/gl_surface"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#CC000000"
+        android:padding="20dp">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
+            <TextView
+                android:id="@+id/status_text"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textColor="#FF80FF80"
+                android:textSize="16sp"
+                android:fontFamily="monospace"
+                android:text="Initializing…" />
+
+            <TextView
+                android:id="@+id/pose_text"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:textColor="#FFFFFFFF"
+                android:textSize="15sp"
+                android:fontFamily="monospace"
+                android:text="" />
+
+            <TextView
+                android:id="@+id/derived_text"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:textColor="#FFFFD080"
+                android:textSize="15sp"
+                android:fontFamily="monospace"
+                android:text="" />
+        </LinearLayout>
+    </ScrollView>
+</FrameLayout>
