@@ -29,7 +29,12 @@ class RoutePlanner(
         if (!sFloor.traversable(start.x, start.y)) return null
         if (!gFloor.traversable(goal.x, goal.y)) return null
 
-        val regions = building.portalRegions
+        // Only portals whose shaft actually links >1 floor can route between floors;
+        // single-floor portals are just walkable and add no value to the graph.
+        val shaftFloorCount = building.portalRegions
+            .groupBy { it.shaftId }
+            .mapValues { e -> e.value.map { it.floor }.toSet().size }
+        val regions = building.portalRegions.filter { (shaftFloorCount[it.shaftId] ?: 0) > 1 }
         val nNodes = 2 + regions.size
         val nodeFloor = IntArray(nNodes)
         val nodePos = arrayOfNulls<GridPos>(nNodes)
