@@ -74,7 +74,7 @@ object DestinationResolver {
     }
 }
 
-private const val DEFAULT_MODEL = "gemini-2.5-flash-lite"
+private const val DEFAULT_MODEL = "gemini-3.1-flash-lite-preview"
 private const val DEFAULT_MAP_PATH = "data/message.json"
 
 private val FALLBACK_MAP_PATHS = listOf(
