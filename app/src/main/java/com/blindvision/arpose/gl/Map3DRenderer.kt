@@ -147,6 +147,8 @@ class Map3DRenderer : GLSurfaceView.Renderer {
         GLES20.glClearColor(0.678f, 0.847f, 0.902f, 1f) // #ADD8E6 light blue
         GLES20.glEnable(GLES20.GL_DEPTH_TEST)
         GLES20.glDisable(GLES20.GL_CULL_FACE)
+        GLES20.glEnable(GLES20.GL_BLEND)
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
 
         program = buildProgram(VERTEX_SHADER, FRAGMENT_SHADER)
         aPos = GLES20.glGetAttribLocation(program, "aPos")
@@ -197,6 +199,7 @@ class Map3DRenderer : GLSurfaceView.Renderer {
         GLES20.glUniformMatrix4fv(uMvp, 1, false, mvp, 0)
         GLES20.glUniform3f(uTranslate, 0f, 0f, 0f)
 
+        // 1. Opaque floor.
         floorBuf?.let { buf ->
             GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, floorTex)
@@ -205,14 +208,7 @@ class Map3DRenderer : GLSurfaceView.Renderer {
             drawBuffer(buf, 6)
         }
 
-        // Walls (solid, lit by normals).
-        wallBuf?.let { buf ->
-            GLES20.glUniform1f(uUseTex, 0f)
-            GLES20.glUniform4f(uColor, 0.255f, 0.275f, 0.318f, 1f)
-            drawBuffer(buf, wallVertCount)
-        }
-
-        // Route ribbon: darker green casing under a bright green core.
+        // 2. Opaque route ribbon (on the floor, drawn before transparent walls).
         pathCasingBuf?.let { buf ->
             GLES20.glUniform1f(uUseTex, 0f)
             GLES20.glUniform4f(uColor, 0.08f, 0.55f, 0.25f, 1f) // #158040
@@ -222,6 +218,16 @@ class Map3DRenderer : GLSurfaceView.Renderer {
             GLES20.glUniform1f(uUseTex, 0f)
             GLES20.glUniform4f(uColor, 0.133f, 0.773f, 0.369f, 1f) // #22C55E
             drawBuffer(buf, pathCoreCount)
+        }
+
+        // 3. Transparent walls — disable depth writes so overlapping glass panels
+        //    blend correctly; depth testing stays on so walls sit above the floor.
+        wallBuf?.let { buf ->
+            GLES20.glDepthMask(false)
+            GLES20.glUniform1f(uUseTex, 0f)
+            GLES20.glUniform4f(uColor, 0.44f, 0.52f, 0.66f, 0.58f) // tinted glass
+            drawBuffer(buf, wallVertCount)
+            GLES20.glDepthMask(true)
         }
 
         // Staircase icons (teal).
@@ -371,7 +377,7 @@ class Map3DRenderer : GLSurfaceView.Renderer {
     }
 
     private fun buildWalls() {
-        val wallH = cell * 55f
+        val wallH = cell * 85f
         val data = ArrayList<Float>(wallRects.size * 5 * 6 * 8)
         for (r in wallRects) {
             val x0 = wx(r.x.toFloat()); val x1 = wx((r.x + r.w).toFloat())
