@@ -76,7 +76,7 @@ To stop the emulator: `"$ADB" emu kill`.
 ## Resolve a spoken destination
 
 `tools/DestinationResolver.kt` is a small Gemini-backed CLI that maps a user
-request to a floor-plan bounding box from `json_map/message.json`. It prints only
+request to a floor-plan bounding box from `data/message.json`. It prints only
 `[minX,minY,maxX,maxY]` or `-1`, where `-1` means the request was not understood.
 
 ```bash

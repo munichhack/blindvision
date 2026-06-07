@@ -53,8 +53,35 @@ fun main(args: Array<String>) {
     kotlin.system.exitProcess(exitCode)
 }
 
+/**
+ * Programmatic entry point reused by the dashboard server. Returns
+ * "[minX,minY,maxX,maxY]" or "-1" (never throws for an unmatched request; does
+ * throw if the Gemini call itself fails).
+ */
+object DestinationResolver {
+    fun resolve(
+        mapJson: String,
+        query: String,
+        currentX: Double?,
+        currentY: Double?,
+        apiKey: String,
+        model: String = DEFAULT_MODEL,
+    ): String {
+        val current = if (currentX != null && currentY != null) Point(currentX, currentY) else null
+        val prompt = buildPrompt(mapJson, query, current)
+        val raw = callGemini(apiKey, model, prompt)
+        return normalizeModelAnswer(raw) ?: "-1"
+    }
+}
+
 private const val DEFAULT_MODEL = "gemini-2.5-flash-lite"
-private const val DEFAULT_MAP_PATH = "json_map/message.json"
+private const val DEFAULT_MAP_PATH = "data/message.json"
+
+private val FALLBACK_MAP_PATHS = listOf(
+    "data/message.json",
+    "json_map/message.json",
+    "json_data/message.json",
+)
 
 private val USAGE = """
 Usage:
@@ -123,8 +150,12 @@ private fun readMapJson(path: String): String {
     val requested = File(path)
     if (requested.isFile) return requested.readText()
 
-    val jsonDataFallback = File("json_data/message.json")
-    if (path == DEFAULT_MAP_PATH && jsonDataFallback.isFile) return jsonDataFallback.readText()
+    if (path == DEFAULT_MAP_PATH) {
+        for (candidate in FALLBACK_MAP_PATHS) {
+            val fallback = File(candidate)
+            if (fallback.isFile) return fallback.readText()
+        }
+    }
 
     throw IllegalArgumentException("Map JSON not found at $path")
 }
@@ -147,7 +178,8 @@ Rules:
 - Return exactly one line and nothing else.
 - If the request identifies a room, match it to a room item id. Room numbers may be spoken without leading zeroes, so "room 31" matches id "0031".
 - If the request identifies a notable location, match it to a notable_location item id.
-- If the request asks for the nearest or closest staircase/stairs, choose the staircase whose bounding-box center is closest to the current location.
+- Honor the requested kind strictly: a "staircase"/"stairs" request may ONLY match items whose id begins with "staircase"; never return the elevator for it. An "elevator"/"lift" request may ONLY match the item with id "elevator".
+- If the request asks for the nearest or closest staircase/stairs, restrict to the staircase items and choose the one whose bounding-box center is closest to the current location.
 - If a nearest/closest request needs the current location and it is unknown, return -1.
 - Return the selected polygon's bounding box as [minX,minY,maxX,maxY].
 - Return -1 when the request is unclear, unsupported, ambiguous, or has no matching item.

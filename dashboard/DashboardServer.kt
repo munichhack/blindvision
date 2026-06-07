@@ -12,10 +12,12 @@ import com.blindvision.planning.RoutePlanner
 import com.blindvision.planning.VoronoiGridPlanner
 import com.blindvision.planning.TransitionSegment
 import com.blindvision.planning.WalkSegment
+import com.blindvision.planning.tools.DestinationResolver
 import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpServer
 import java.io.File
 import java.net.InetSocketAddress
+import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
 
 /**
@@ -80,6 +82,7 @@ fun main(args: Array<String>) {
     server.createContext("/sample") { ex -> handleSample(ex) }
     server.createContext("/voronoi") { ex -> respond(ex, "application/json", voronoiJson(pick(ex))) }
     server.createContext("/rooms") { ex -> respond(ex, "application/json", pick(ex).rooms ?: "{\"items\":[]}") }
+    server.createContext("/resolve") { ex -> handleResolve(ex) }
     server.createContext("/") { ex -> respond(ex, "text/html; charset=utf-8", INDEX_HTML) }
     server.executor = null
     server.start()
@@ -131,6 +134,36 @@ private fun handleSample(ex: HttpExchange) {
         .plan(BuildingPos(0, start.x, start.y), BuildingPos(0, target.x, target.y))
     respond(ex, "application/json", planJson(route, BuildingPos(0, start.x, start.y), BuildingPos(0, target.x, target.y)))
 }
+
+private fun handleResolve(ex: HttpExchange) {
+    val b = pick(ex)
+    val q = query(ex)
+    val text = URLDecoder.decode(q["q"] ?: "", "UTF-8").trim()
+    if (text.isEmpty()) { respond(ex, "application/json", "{\"ok\":false,\"error\":\"empty query\"}"); return }
+    val rooms = b.rooms
+        ?: run { respond(ex, "application/json", "{\"ok\":false,\"error\":\"no room map for this building\"}"); return }
+    val apiKey = (System.getenv("GEMINI_API_KEY") ?: System.getenv("GOOGLE_API_KEY"))?.takeIf { it.isNotBlank() }
+        ?: run { respond(ex, "application/json", "{\"ok\":false,\"error\":\"GEMINI_API_KEY not set on server\"}"); return }
+    val cx = q["cx"]?.toDoubleOrNull()
+    val cy = q["cy"]?.toDoubleOrNull()
+    val model = System.getenv("GEMINI_MODEL")?.takeIf { it.isNotBlank() }
+    val box = try {
+        if (model != null) DestinationResolver.resolve(rooms, text, cx, cy, apiKey, model)
+        else DestinationResolver.resolve(rooms, text, cx, cy, apiKey)
+    } catch (e: Exception) {
+        respond(ex, "application/json", "{\"ok\":false,\"error\":${jsonStr(e.message ?: "resolve failed")}}")
+        return
+    }
+    val nums = Regex("-?\\d+").findAll(box).map { it.value.toInt() }.toList()
+    if (box.trim() == "-1" || nums.size < 4) {
+        respond(ex, "application/json", "{\"ok\":true,\"box\":null}")
+    } else {
+        respond(ex, "application/json", "{\"ok\":true,\"box\":[${nums[0]},${nums[1]},${nums[2]},${nums[3]}]}")
+    }
+}
+
+private fun jsonStr(s: String): String =
+    "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", " ").replace("\r", " ") + "\""
 
 // --- JSON -------------------------------------------------------------------
 
@@ -279,6 +312,9 @@ private val INDEX_HTML = """
     <div class="row"><input id="sf" placeholder="f"><input id="sx" placeholder="x"><input id="sy" placeholder="y"></div></div>
   <div class="grp"><label>Target (floor, x, y)</label>
     <div class="row"><input id="tf" placeholder="f"><input id="tx" placeholder="x"><input id="ty" placeholder="y"></div></div>
+  <div class="grp"><label>Destination (spoken)</label>
+    <div class="row"><input id="dest" placeholder="e.g. room 31 / the elevator" style="width:210px">
+      <button class="alt" onclick="resolveDest()">Resolve &amp; route</button></div></div>
   <button onclick="plan()">Plan route</button>
   <button class="alt" onclick="runSample()">Run sample test</button>
   <button class="sec" onclick="clearRoute()">Clear</button>
@@ -295,12 +331,13 @@ private val INDEX_HTML = """
   <span><i class="sw" style="background:#5ac8eb"></i>Voronoi boundary</span>
   <span><i class="sw" style="background:#ffe24d"></i>room</span>
   <span><i class="sw" style="background:#ffb020"></i>elevator / stairs</span>
+  <span><i class="sw" style="background:#ff5cf0"></i>resolved destination</span>
 </div>
 <div id="floors"></div>
 <script>
 var CS=26, building=null, segments=null, clickTarget=false, autoSampleDone=false;
 var COL={wall:[43,52,64], portal:[106,169,255], walk:[232,237,242]};
-var skeletonCache={}, roomsCache={};
+var skeletonCache={}, roomsCache={}, resolvedBox=null;
 function el(id){return document.getElementById(id);}
 function val(id){var v=parseInt(el(id).value);return isNaN(v)?null:v;}
 function curId(){return el('building').value;}
@@ -326,6 +363,30 @@ function drawSkeleton(f,cv){
   var g=cv.getContext('2d');
   if(CS===1){ g.fillStyle='rgba(90,200,235,0.65)'; for(var i=0;i<cells.length;i++){ g.fillRect(cells[i][0],cells[i][1],1,1); } }
   else { g.fillStyle='rgba(90,200,235,0.5)'; for(var i=0;i<cells.length;i++){ g.fillRect(cells[i][0]*CS+CS*0.3,cells[i][1]*CS+CS*0.3,Math.max(2,CS*0.4),Math.max(2,CS*0.4)); } }
+}
+function resolveDest(){
+  var text=el('dest').value.trim();
+  if(!text){ el('status').textContent='Enter a destination phrase.'; return; }
+  var sf=val('sf'),sx=val('sx'),sy=val('sy');
+  if([sf,sx,sy].some(function(v){return v===null;})){ el('status').textContent='Set a start first (click a cell or type) - it is used as your current location for "nearest" queries.'; return; }
+  var qs='/resolve?id='+encodeURIComponent(curId())+'&q='+encodeURIComponent(text)+'&cx='+sx+'&cy='+sy;
+  el('status').textContent='Resolving "'+text+'" via Gemini...';
+  fetch(qs).then(function(r){return r.json();}).then(function(res){
+    if(!res.ok){ el('status').textContent='Resolve failed: '+(res.error||'unknown'); return; }
+    if(!res.box){ resolvedBox=null; redraw(); el('status').textContent='Could not match "'+text+'" to a destination.'; return; }
+    resolvedBox=res.box;
+    var cx=Math.round((res.box[0]+res.box[2])/2), cy=Math.round((res.box[1]+res.box[3])/2);
+    el('tf').value=0; el('tx').value=cx; el('ty').value=cy;
+    el('status').textContent='Resolved "'+text+'" to ['+res.box.join(',')+'] - routing to center ('+cx+','+cy+').';
+    plan();
+  });
+}
+function drawResolvedBox(f,cv){
+  if(!resolvedBox||f.index!==0||!cv) return;
+  var g=cv.getContext('2d');
+  var x0=resolvedBox[0]*CS, y0=resolvedBox[1]*CS, x1=resolvedBox[2]*CS, y1=resolvedBox[3]*CS;
+  g.lineWidth=Math.max(2,CS*1.5); g.strokeStyle='#ff5cf0'; g.setLineDash([8,5]);
+  g.strokeRect(x0,y0,x1-x0,y1-y0); g.setLineDash([]);
 }
 function roomsFor(idx){ return idx===0 ? (roomsCache[curId()]||null) : null; }
 function ensureRooms(cb){
@@ -361,6 +422,8 @@ fetch('/buildings').then(function(r){return r.json();}).then(function(list){
   });
   var qp=new URLSearchParams(window.location.search);
   if(qp.get('planner')) el('planner').value=qp.get('planner');
+  if(qp.get('sf')!==null){ el('sf').value=qp.get('sf'); el('sx').value=qp.get('sx'); el('sy').value=qp.get('sy'); }
+  if(qp.get('dest')) el('dest').value=qp.get('dest');
   if(list.length){ sel.value=list[list.length-1].id; loadBuilding(true); }
 });
 
@@ -373,7 +436,10 @@ function loadBuilding(autoSample){
     CS=Math.max(1, Math.min(26, Math.floor(720/maxW)));
     renderFloors();
     ensureRooms(function(){
-      var after=function(){ if(autoSample && !autoSampleDone){ autoSampleDone=true; runSample(); } };
+      var after=function(){
+        if(autoSample && !autoSampleDone && el('dest').value && val('sx')!==null){ autoSampleDone=true; resolveDest(); return; }
+        if(autoSample && !autoSampleDone){ autoSampleDone=true; runSample(); }
+      };
       if(plannerId()==='voronoi'){ ensureSkeleton(function(){ redraw(); after(); }); } else { redraw(); after(); }
     });
   });
@@ -388,7 +454,7 @@ function renderFloors(){
     cv.width=f.width*CS; cv.height=f.height*CS; cv.dataset.floor=f.index;
     cv.addEventListener('click', function(ev){onCellClick(ev,f);});
     wrap.appendChild(h); wrap.appendChild(cv); host.appendChild(wrap);
-    drawFloor(f,cv); drawSkeleton(f,cv); drawRooms(f,cv);
+    drawFloor(f,cv); drawSkeleton(f,cv); drawRooms(f,cv); drawResolvedBox(f,cv);
   });
   if(segments) drawOverlay();
 }
@@ -441,7 +507,7 @@ function drawMarker(f,x,y,color){
   g.fillStyle=color; g.beginPath(); g.arc(cx,cy,Math.max(5,CS*0.30),0,7); g.fill();
   g.strokeStyle='#0d1117'; g.lineWidth=2; g.stroke();
 }
-function redraw(){ building.floors.forEach(function(f){ var cv=floorCanvas(f.index); drawFloor(f,cv); drawSkeleton(f,cv); drawRooms(f,cv); }); drawOverlay(); }
+function redraw(){ building.floors.forEach(function(f){ var cv=floorCanvas(f.index); drawFloor(f,cv); drawSkeleton(f,cv); drawRooms(f,cv); drawResolvedBox(f,cv); }); drawOverlay(); }
 function onCellClick(ev,f){
   var rect=ev.target.getBoundingClientRect();
   var x=Math.floor((ev.clientX-rect.left)/CS), y=Math.floor((ev.clientY-rect.top)/CS);
@@ -472,7 +538,7 @@ function applyResult(res, sample){
   redraw();
 }
 function clearFields(){ ['sf','sx','sy','tf','tx','ty'].forEach(function(id){el(id).value='';}); clickTarget=false; }
-function clearRoute(){ segments=null; clearFields(); el('status').textContent='Cleared.'; redraw(); }
+function clearRoute(){ segments=null; resolvedBox=null; el('dest').value=''; clearFields(); el('status').textContent='Cleared.'; redraw(); }
 </script>
 </body>
 </html>
