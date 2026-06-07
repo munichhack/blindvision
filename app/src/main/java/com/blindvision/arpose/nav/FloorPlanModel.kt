@@ -24,10 +24,16 @@ data class NavLocation(
     companion object {
         /**
          * Adapt an ARCore Y-up world position (metres) into the planner's z-up
-         * floor-plan convention: planar (x, y) <- (tx, tz), height z <- ty.
+         * floor-plan convention: planar (x, y) <- (tx, -tz), height z <- ty.
+         *
+         * The -tz is important: ARCore's "forward" (camera view direction) is
+         * world -Z, and the floor plan is viewed top-down with forward pointing
+         * up. With y = +tz the trajectory came out mirrored (a real right turn
+         * rendered as a left turn); y = -tz makes screen-up = forward so turns
+         * match reality. (+X stays screen-right, i.e. East.)
          */
         fun fromArCore(tx: Float, ty: Float, tz: Float): NavLocation =
-            NavLocation(x = tx, y = tz, z = ty)
+            NavLocation(x = tx, y = -tz, z = ty)
     }
 }
 
