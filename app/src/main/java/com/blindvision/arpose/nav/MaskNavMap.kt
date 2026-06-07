@@ -44,6 +44,13 @@ class MaskNavMap private constructor(
             z = floorZ,
         )
 
+    /** Inverse of [cellToLocation]: metric location -> fractional grid (col, row). */
+    fun locationToCell(location: NavLocation): FloatArray =
+        floatArrayOf(
+            originCol + location.x / metersPerCell,
+            originRow - location.y / metersPerCell,
+        )
+
     /**
      * A [PlanCalibration] (metres -> source-bitmap pixels) consistent with [cellToLocation]:
      * with it, cell `(col,row)` projects to bitmap pixel `(col*sx, row*sy)`. Pass the

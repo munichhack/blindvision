@@ -11,6 +11,12 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
+    <com.blindvision.arpose.gl.Map3DView
+        android:id="@+id/map_3d"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:visibility="gone" />
+
     <android.opengl.GLSurfaceView
         android:id="@+id/gl_surface"
         android:layout_width="120dp"
@@ -18,6 +24,46 @@
         android:layout_gravity="top|end"
         android:layout_marginTop="-180dp"
         android:layout_marginEnd="-132dp" />
+
+    <TextView
+        android:id="@+id/loading_text"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:background="#CC101418"
+        android:padding="16dp"
+        android:text="Loading map…"
+        android:textColor="#FFFFFFFF"
+        android:textSize="15sp"
+        android:fontFamily="sans-serif-medium" />
+
+    <ImageButton
+        android:id="@+id/view_mode_button"
+        android:layout_width="48dp"
+        android:layout_height="48dp"
+        android:layout_gravity="bottom|end"
+        android:layout_marginEnd="16dp"
+        android:layout_marginBottom="168dp"
+        android:background="@drawable/recenter_button_bg"
+        android:contentDescription="Switch between 2.5D and 3D map"
+        android:elevation="6dp"
+        android:padding="12dp"
+        android:scaleType="centerInside"
+        android:src="@drawable/ic_view_3d" />
+
+    <ImageButton
+        android:id="@+id/recenter_button"
+        android:layout_width="48dp"
+        android:layout_height="48dp"
+        android:layout_gravity="bottom|end"
+        android:layout_marginEnd="16dp"
+        android:layout_marginBottom="112dp"
+        android:background="@drawable/recenter_button_bg"
+        android:contentDescription="Recenter on your location"
+        android:elevation="6dp"
+        android:padding="12dp"
+        android:scaleType="centerInside"
+        android:src="@drawable/ic_my_location" />
 
     <TextView
         android:id="@+id/pose_text"

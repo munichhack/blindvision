@@ -1,8 +1,8 @@
 package com.blindvision.arpose.nav
 
+import android.animation.ValueAnimator
 import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Matrix
@@ -10,22 +10,21 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
 import android.util.AttributeSet
+import android.view.GestureDetector
+import android.view.MotionEvent
+import android.view.ScaleGestureDetector
 import android.view.View
-import com.blindvision.arpose.R
+import kotlin.math.min
 import kotlin.math.atan2
 import kotlin.math.cos
-import kotlin.math.min
 import kotlin.math.sin
 
 /**
  * Renders a floor plan with a red "you are here" dot, an optional planned path,
- * and a floor label. Coordinates come in as [NavLocation]s (planar metres on a
- * floor); [PlanCalibration] maps them to bitmap pixels and this view applies the
- * bitmap->view fit on top so the overlay always stays aligned with the image.
+ * and a floor label. Supports pinch-zoom and drag-pan like mainstream map apps.
  *
- * The planned path and current location are floor-aware: only the segment of the
- * path on the [currentFloor] is drawn solid, and the dot dims when the user is
- * not on the floor currently shown.
+ * Coordinates come in as [NavLocation]s (planar metres on a floor); [PlanCalibration]
+ * maps them to bitmap pixels and this view applies fit + user transform on top.
  */
 class FloorPlanView @JvmOverloads constructor(
     context: Context,
@@ -33,38 +32,89 @@ class FloorPlanView @JvmOverloads constructor(
     defStyleAttr: Int = 0
 ) : View(context, attrs, defStyleAttr) {
 
+    enum class MapViewMode { VIEW_25D, VIEW_3D }
+
+    private var bitmap25d: Bitmap? = null
+    private var bitmap3d: Bitmap? = null
+    private var viewMode = MapViewMode.VIEW_25D
     private var bitmap: Bitmap? = null
     private var calibration: PlanCalibration? = null
     private val floorModel = FloorModel()
 
     private var userLocation: NavLocation? = null
-    // Heading is derived from the *direction of travel* (the change in plan
-    // position), not from device yaw — so the arrow always points where the dot
-    // is actually moving on screen. 0 rad points up (toward -planY on screen).
     private var userHeadingRad: Float = 0f
     private var hasHeading = false
     private var headingRefLocation: NavLocation? = null
     private var path: List<NavLocation> = emptyList()
 
-    /** Floor currently shown on screen (defaults to the user's floor). */
     private var displayedFloor: Int = floorModel.groundFloorIndex
     private var userFloorKnown = false
 
-    // Bitmap -> view fit transform (contain, centred). Recomputed on size change.
+    /** Contain-fit: entire map visible at [MIN_USER_SCALE]. */
     private val fitMatrix = Matrix()
+    /** Pinch / pan applied on top of the fit transform. */
+    private val userMatrix = Matrix()
+    private val displayMatrix = Matrix()
     private val mappedPoint = FloatArray(2)
+    private var userScale = 1f
+    /** When true the map pans under a fixed centre dot (navigation mode). */
+    private var followUser = true
 
-    private val bgPaint = Paint().apply { color = Color.parseColor("#EEF1F4") }
+    private val scaleDetector = ScaleGestureDetector(
+        context,
+        object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+            override fun onScale(detector: ScaleGestureDetector): Boolean {
+                val proposed = userScale * detector.scaleFactor
+                val clamped = proposed.coerceIn(MIN_USER_SCALE, MAX_USER_SCALE)
+                val factor = clamped / userScale
+                if (factor != 1f) {
+                    followUser = false
+                    userScale = clamped
+                    userMatrix.postScale(factor, factor, detector.focusX, detector.focusY)
+                    invalidate()
+                }
+                return true
+            }
+        }
+    )
+
+    private val gestureDetector = GestureDetector(
+        context,
+        object : GestureDetector.SimpleOnGestureListener() {
+            override fun onScroll(
+                e1: MotionEvent?,
+                e2: MotionEvent,
+                distanceX: Float,
+                distanceY: Float
+            ): Boolean {
+                followUser = false
+                userMatrix.postTranslate(-distanceX, -distanceY)
+                invalidate()
+                return true
+            }
+        }
+    )
+
+    private var panAnimator: ValueAnimator? = null
+
+    private val bgPaint = Paint().apply { color = Color.parseColor("#14181E") }
     private val bitmapPaint = Paint(Paint.FILTER_BITMAP_FLAG)
-    private val pathPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#2962FF")
+    private val pathGlowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#402563EB")
         style = Paint.Style.STROKE
-        strokeWidth = 8f
+        strokeWidth = 14f
+        strokeCap = Paint.Cap.ROUND
+        strokeJoin = Paint.Join.ROUND
+    }
+    private val pathPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#2563EB")
+        style = Paint.Style.STROKE
+        strokeWidth = 6f
         strokeCap = Paint.Cap.ROUND
         strokeJoin = Paint.Join.ROUND
     }
     private val pathDotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#2962FF")
+        color = Color.parseColor("#2563EB")
         style = Paint.Style.FILL
     }
     private val dotFillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -95,48 +145,75 @@ class FloorPlanView @JvmOverloads constructor(
     private val scratchPath = Path()
 
     init {
-        setFloorPlan(
-            BitmapFactory.decodeResource(resources, R.drawable.floor_plan)
-        )
+        isClickable = true
     }
 
-    /** Replace the floor-plan image and reset the calibration to a centred default. */
     fun setFloorPlan(bmp: Bitmap?, calibration: PlanCalibration? = null) {
-        bitmap = bmp
+        bitmap25d = bmp
+        bitmap3d = null
+        applyActiveBitmap()
         this.calibration = calibration ?: bmp?.let {
             PlanCalibration.centered(it.width, it.height)
         }
+        resetUserTransform()
+        followUser = true
         recomputeFit()
+        centerMapOnUser()
         invalidate()
     }
 
-    /** Override the metres->pixels calibration (e.g. once a surveyed map exists). */
+    /** Supply both rendered styles; they must share the same pixel dimensions. */
+    fun setMapBitmaps(
+        bmp25d: Bitmap,
+        bmp3d: Bitmap,
+        calibration: PlanCalibration,
+    ) {
+        this.bitmap25d = bmp25d
+        this.bitmap3d = bmp3d
+        this.calibration = calibration
+        applyActiveBitmap()
+        resetUserTransform()
+        followUser = true
+        recomputeFit()
+        centerMapOnUser()
+        invalidate()
+    }
+
+    fun toggleViewMode(): MapViewMode {
+        if (bitmap3d == null) return viewMode
+        viewMode = if (viewMode == MapViewMode.VIEW_25D) MapViewMode.VIEW_3D
+        else MapViewMode.VIEW_25D
+        applyActiveBitmap()
+        recomputeFit()
+        if (followUser) centerMapOnUser() else invalidate()
+        return viewMode
+    }
+
+    fun currentViewMode(): MapViewMode = viewMode
+
+    private fun applyActiveBitmap() {
+        bitmap = when (viewMode) {
+            MapViewMode.VIEW_25D -> bitmap25d
+            MapViewMode.VIEW_3D -> bitmap3d ?: bitmap25d
+        }
+    }
+
     fun setCalibration(calibration: PlanCalibration) {
         this.calibration = calibration
         invalidate()
     }
 
-    /**
-     * Adopt the calibration implied by [map] for the currently displayed bitmap, so the
-     * planned path (and the live dot) line up exactly with this floor plan.
-     */
     fun applyMaskCalibration(map: MaskNavMap) {
         val bmp = bitmap ?: return
         calibration = map.calibrationFor(bmp.width, bmp.height)
         invalidate()
     }
 
-    /** The planned route from A* / Dijkstra. May span multiple floors. */
     fun setPath(points: List<NavLocation>) {
         path = points
         invalidate()
     }
 
-    /**
-     * Update the user's current location. The travel-direction arrow is computed
-     * here from the displacement since the last significant move, so it points the
-     * way the dot is moving on the plan (independent of how the phone is held).
-     */
     fun setUserLocation(location: NavLocation) {
         val ref = headingRefLocation
         if (ref == null) {
@@ -144,24 +221,19 @@ class FloorPlanView @JvmOverloads constructor(
         } else {
             val dx = location.x - ref.x
             val dy = location.y - ref.y
-            // Only update heading once the user has actually moved, to avoid the
-            // arrow spinning on VIO jitter while standing still.
             if (dx * dx + dy * dy >= MOVE_EPS_SQ_METERS) {
-                // atan2(dx, dy): 0 -> +planY (screen up), +x -> screen right,
-                // matching the arrow geometry and the dot's on-screen motion.
                 userHeadingRad = atan2(dx, dy)
                 hasHeading = true
                 headingRefLocation = location
             }
         }
         userLocation = location
-        // Follow the user's floor automatically.
         displayedFloor = floorModel.floorOf(location)
         userFloorKnown = true
+        if (followUser) centerMapOnUser()
         invalidate()
     }
 
-    /** Manually choose which floor is shown (e.g. a floor switcher in the UI). */
     fun showFloor(floor: Int) {
         displayedFloor = floor
         invalidate()
@@ -169,9 +241,78 @@ class FloorPlanView @JvmOverloads constructor(
 
     fun currentFloor(): Int = displayedFloor
 
+    /** Re-enable follow mode and pan the map so the user sits at the centre. */
+    fun recenterOnUser(animated: Boolean = true) {
+        followUser = true
+        if (width == 0 || height == 0 || userLocation == null || calibration == null) return
+
+        panAnimator?.cancel()
+        if (!animated) {
+            centerMapOnUser()
+            invalidate()
+            return
+        }
+
+        val src = calibration!!.toPixels(userLocation!!)
+        val pt = floatArrayOf(src[0], src[1])
+        updateDisplayMatrix()
+        displayMatrix.mapPoints(pt)
+        val dx = width / 2f - pt[0]
+        val dy = height / 2f - pt[1]
+        if (dx == 0f && dy == 0f) return
+
+        var lastT = 0f
+        panAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = RECENTER_ANIM_MS
+            addUpdateListener { anim ->
+                val t = anim.animatedValue as Float
+                userMatrix.postTranslate(dx * (t - lastT), dy * (t - lastT))
+                lastT = t
+                invalidate()
+            }
+            addListener(object : android.animation.AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: android.animation.Animator) {
+                    centerMapOnUser()
+                }
+            })
+            start()
+        }
+    }
+
+    /** Rebuild pan/zoom so the user's position maps to the view centre. */
+    private fun centerMapOnUser() {
+        val loc = userLocation ?: return
+        val cal = calibration ?: return
+        if (width == 0 || height == 0) return
+
+        val src = cal.toPixels(loc)
+        val pt = floatArrayOf(src[0], src[1])
+        userMatrix.reset()
+        userMatrix.postScale(userScale, userScale, width / 2f, height / 2f)
+        val m = Matrix()
+        m.set(fitMatrix)
+        m.postConcat(userMatrix)
+        m.mapPoints(pt)
+
+        userMatrix.postTranslate(width / 2f - pt[0], height / 2f - pt[1])
+    }
+
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        panAnimator?.cancel()
+        var handled = scaleDetector.onTouchEvent(event)
+        handled = gestureDetector.onTouchEvent(event) || handled
+        return handled || super.onTouchEvent(event)
+    }
+
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
         recomputeFit()
+    }
+
+    private fun resetUserTransform() {
+        panAnimator?.cancel()
+        userMatrix.reset()
+        userScale = 1f
     }
 
     private fun recomputeFit() {
@@ -183,15 +324,21 @@ class FloorPlanView @JvmOverloads constructor(
         fitMatrix.reset()
         fitMatrix.setScale(scale, scale)
         fitMatrix.postTranslate(dx, dy)
+        updateDisplayMatrix()
     }
 
-    /** Map a location to on-screen pixels via calibration + fit transform. */
+    private fun updateDisplayMatrix() {
+        displayMatrix.set(fitMatrix)
+        displayMatrix.postConcat(userMatrix)
+    }
+
     private fun project(location: NavLocation): FloatArray {
         val cal = calibration!!
         val src = cal.toPixels(location)
         mappedPoint[0] = src[0]
         mappedPoint[1] = src[1]
-        fitMatrix.mapPoints(mappedPoint)
+        updateDisplayMatrix()
+        displayMatrix.mapPoints(mappedPoint)
         return mappedPoint
     }
 
@@ -200,7 +347,10 @@ class FloorPlanView @JvmOverloads constructor(
         canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), bgPaint)
 
         val bmp = bitmap
-        if (bmp != null) canvas.drawBitmap(bmp, fitMatrix, bitmapPaint)
+        if (bmp != null) {
+            updateDisplayMatrix()
+            canvas.drawBitmap(bmp, displayMatrix, bitmapPaint)
+        }
         if (calibration == null) return
 
         drawPath(canvas)
@@ -214,7 +364,6 @@ class FloorPlanView @JvmOverloads constructor(
         var started = false
         for (loc in path) {
             if (floorModel.floorOf(loc) != displayedFloor) {
-                // Break the polyline where the route leaves this floor.
                 started = false
                 continue
             }
@@ -226,9 +375,9 @@ class FloorPlanView @JvmOverloads constructor(
                 scratchPath.lineTo(p[0], p[1])
             }
         }
+        canvas.drawPath(scratchPath, pathGlowPaint)
         canvas.drawPath(scratchPath, pathPaint)
 
-        // Endpoints (start / destination) on this floor.
         path.firstOrNull { floorModel.floorOf(it) == displayedFloor }?.let {
             val p = project(it)
             canvas.drawCircle(p[0], p[1], 12f, pathDotPaint)
@@ -242,9 +391,16 @@ class FloorPlanView @JvmOverloads constructor(
     private fun drawUser(canvas: Canvas) {
         val loc = userLocation ?: return
         val onThisFloor = !userFloorKnown || floorModel.floorOf(loc) == displayedFloor
-        val p = project(loc)
-        val cx = p[0]
-        val cy = p[1]
+        val cx: Float
+        val cy: Float
+        if (followUser && width > 0 && height > 0) {
+            cx = width / 2f
+            cy = height / 2f
+        } else {
+            val p = project(loc)
+            cx = p[0]
+            cy = p[1]
+        }
 
         val alpha = if (onThisFloor) 255 else 70
         dotFillPaint.alpha = alpha
@@ -253,7 +409,6 @@ class FloorPlanView @JvmOverloads constructor(
 
         if (onThisFloor && hasHeading) {
             canvas.drawCircle(cx, cy, 34f, dotHaloPaint)
-            // Travel-direction arrow: 0 rad points up on the plan.
             val len = 46f
             val tipX = cx + len * sin(userHeadingRad)
             val tipY = cy - len * cos(userHeadingRad)
@@ -291,7 +446,9 @@ class FloorPlanView @JvmOverloads constructor(
     }
 
     private companion object {
-        // Minimum travel (≈0.05 m) before the heading arrow re-orients.
         const val MOVE_EPS_SQ_METERS = 0.0025f
+        const val MIN_USER_SCALE = 1f
+        const val MAX_USER_SCALE = 6f
+        const val RECENTER_ANIM_MS = 280L
     }
 }
