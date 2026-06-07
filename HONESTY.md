@@ -24,6 +24,7 @@ Features that run end-to-end on the live app, with real data and real logic. Be 
 - Visualize floor map in 3D, takes in the map representation, renders a map, and displays it
 - Track the user as they are navigating using Visual Inertial Odometry (VIO), takes in the camera and IMU input, and outputs the user's relative location w.r.t. their starting location, and their orientation  
 - Computing a walkable path using Voronoi, takes in the map representation, and outputs a path between the starting location and the target
+- Entering a free-text direction (e.g., nearest elevator, room 1) automatically selects the appropriate location, takes in the current location, a mapping between rooms, elevators, staircases, etc. to their location, and the free-text, and outputs the target location
 
 ---
 
@@ -48,7 +49,7 @@ Everything the project calls or pretends to call. Mark each as real or mocked.
 
 | Service / API / dataset | Used for | Real call or mocked? | Auth (sandbox / test key / none) |
 |---|---|---|---|
-|  |  |  |  |
+| GEMINI | Automatically choosing the user target location | real | test key |
 |  |  |  |  |
 
 ---
@@ -73,5 +74,3 @@ If none, write: *"All code in this repo was written during the hackathon window.
 What we would build next, and the weak spots we already know about. Naming these honestly is a strength, not a flaw.
 
 - A new revenue stream we would like to target is our customers (e.g., building owners) directly by providing them with continuous data about typical user patterns while navigating in their buildings. This would be particularly target at shopping centers and malls, as it can help owners identify "sweet spots", or places that people pass by most, and price rents appropriately.
-- 
-- 
