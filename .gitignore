@@ -13,3 +13,6 @@ app/build/
 /.toolchain/
 # Large input data (floor-plan masks / generated CSVs)
 /data/
+
+# Secrets (API keys for the destination resolver)
+.env
