@@ -52,6 +52,14 @@ class Map3DView @JvmOverloads constructor(
         renderer.setUser(col, row, headingRad)
     }
 
+    fun setDestination(col: Float, row: Float) {
+        renderer.setDestination(col, row)
+    }
+
+    fun clearDestination() {
+        renderer.clearDestination()
+    }
+
     override fun onTouchEvent(event: MotionEvent): Boolean {
         scaleDetector.onTouchEvent(event)
         when (event.actionMasked) {
@@ -64,7 +72,8 @@ class Map3DView @JvmOverloads constructor(
                 if (!scaleDetector.isInProgress && event.pointerCount == 1) {
                     val dx = event.x - lastX
                     val dy = event.y - lastY
-                    renderer.orbitBy(-dx * 0.005f, -dy * 0.005f)
+                    // Vertical drag: finger down tilts toward top-down; horizontal drag orbits.
+                    renderer.orbitBy(-dx * 0.005f, dy * 0.005f)
                     lastX = event.x
                     lastY = event.y
                 }

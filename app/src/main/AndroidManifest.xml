@@ -4,6 +4,7 @@
     <!-- ARCore needs the camera on a real device. required=false so the app
          still installs on the emulator (which has no AR camera). -->
     <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.INTERNET" />
     <uses-feature
         android:name="android.hardware.camera.ar"
         android:required="false" />

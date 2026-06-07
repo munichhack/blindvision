@@ -3,16 +3,19 @@ package com.blindvision.arpose
 import android.Manifest
 import android.app.Activity
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.opengl.GLSurfaceView
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import android.view.View
+import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputMethodManager
+import android.widget.EditText
 import android.widget.ImageButton
 import android.widget.TextView
 import com.blindvision.arpose.gl.Map3DView
-import com.blindvision.arpose.nav.FloorPlanView
 import com.blindvision.arpose.nav.MaskMapRenderer
 import com.blindvision.arpose.nav.MaskNavMap
 import com.blindvision.arpose.nav.NavLocation
@@ -21,9 +24,12 @@ import com.blindvision.arpose.pose.ArCorePoseProvider
 import com.blindvision.arpose.pose.PoseProvider
 import com.blindvision.arpose.pose.SimulatedPoseProvider
 import com.blindvision.arpose.pose.WorldPoseConsumer
+import com.blindvision.planning.GridPos
 import com.blindvision.planning.VoronoiGridPlanner
+import com.blindvision.planning.tools.DestinationResolver
 import com.google.ar.core.ArCoreApk
 import com.google.ar.core.exceptions.UnavailableException
+import kotlin.math.roundToInt
 
 /**
  * Entry point. Decides at runtime which [PoseProvider] to use:
@@ -37,15 +43,19 @@ import com.google.ar.core.exceptions.UnavailableException
  */
 class MainActivity : Activity() {
 
-    private lateinit var poseText: TextView
     private lateinit var loadingText: TextView
-    private lateinit var floorPlanView: FloorPlanView
+    private lateinit var searchInput: EditText
+    private lateinit var searchButton: ImageButton
+    private lateinit var destinationLabel: TextView
+    private lateinit var searchStatus: TextView
     private lateinit var map3dView: Map3DView
-    private lateinit var recenterButton: ImageButton
     private lateinit var glSurfaceView: GLSurfaceView
 
     private var navMap: MaskNavMap? = null
-    private var show3d = false
+    private var cachedFloor3d: Bitmap? = null
+    private var cachedWallRects: List<WallMesher.Rect> = emptyList()
+    private var lastUserCell: GridPos? = null
+    private var resolving = false
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private lateinit var consumer: WorldPoseConsumer
@@ -56,68 +66,116 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
-        poseText = findViewById(R.id.pose_text)
         loadingText = findViewById(R.id.loading_text)
-        floorPlanView = findViewById(R.id.floor_plan)
+        searchInput = findViewById(R.id.search_input)
+        searchButton = findViewById(R.id.search_button)
+        destinationLabel = findViewById(R.id.destination_label)
+        searchStatus = findViewById(R.id.search_status)
         map3dView = findViewById(R.id.map_3d)
         glSurfaceView = findViewById(R.id.gl_surface)
-        recenterButton = findViewById(R.id.recenter_button)
-        recenterButton.setOnClickListener { floorPlanView.recenterOnUser() }
-        findViewById<ImageButton>(R.id.view_mode_button).setOnClickListener { toggle3d(it) }
 
-        consumer = WorldPoseConsumer { readout ->
-            runOnUiThread { render(readout) }
+        searchButton.setOnClickListener { submitSearch() }
+        searchInput.setOnEditorActionListener { _, actionId, _ ->
+            if (actionId == EditorInfo.IME_ACTION_SEARCH) {
+                submitSearch()
+                true
+            } else {
+                false
+            }
         }
 
-        planDemoRoute()
+        consumer = WorldPoseConsumer { readout ->
+            runOnUiThread { updateUserOnMap(readout) }
+        }
+
+        loadMapAndPlan(MaskNavMap.DEMO_GOAL, null)
+    }
+
+    private fun submitSearch() {
+        val query = searchInput.text.toString().trim()
+        if (query.isEmpty() || resolving) return
+        hideKeyboard()
+        resolveAndPlan(query)
+    }
+
+    private fun hideKeyboard() {
+        val imm = getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager
+        imm.hideSoftInputFromWindow(searchInput.windowToken, 0)
     }
 
     /**
-     * Load the occupancy mask, plan a Voronoi route from the bottom-center door to
-     * the large top-left room, and draw it over the plan. Done off the UI
-     * thread because parsing the ~1.6 MB mask and planning over a 1448x1086 grid
-     * is heavy.
+     * Ask Gemini to resolve the query to a floor-plan bounding box, then replan
+     * the route to that destination.
      */
-    private fun planDemoRoute() {
+    private fun resolveAndPlan(query: String) {
+        val apiKey = BuildConfig.GEMINI_API_KEY.trim()
+        if (apiKey.isEmpty()) {
+            showSearchError(getString(R.string.search_no_api_key))
+            return
+        }
+
+        resolving = true
+        searchStatus.visibility = View.VISIBLE
+        searchStatus.setTextColor(0xFF555555.toInt())
+        searchStatus.text = getString(R.string.search_resolving)
+        destinationLabel.visibility = View.GONE
+        searchButton.isEnabled = false
+
+        Thread {
+            try {
+                val roomsJson = resources.openRawResource(R.raw.message)
+                    .bufferedReader().use { it.readText() }
+                val current = lastUserCell
+                val box = DestinationResolver.resolve(
+                    mapJson = roomsJson,
+                    query = query,
+                    currentX = current?.x?.toDouble(),
+                    currentY = current?.y?.toDouble(),
+                    apiKey = apiKey,
+                    model = BuildConfig.GEMINI_MODEL,
+                )
+                val goal = parseGoalFromBox(box)
+                    ?: run {
+                        runOnUiThread {
+                            resolving = false
+                            searchButton.isEnabled = true
+                            showSearchError(getString(R.string.search_not_found))
+                        }
+                        return@Thread
+                    }
+
+                replanRoute(goal, query)
+            } catch (e: Exception) {
+                Log.e(WorldPoseConsumer.LOG_TAG, "Destination search failed", e)
+                runOnUiThread {
+                    resolving = false
+                    searchButton.isEnabled = true
+                    showSearchError(e.message ?: getString(R.string.search_not_found))
+                }
+            }
+        }.start()
+    }
+
+    private fun parseGoalFromBox(box: String): GridPos? {
+        if (box.trim() == "-1") return null
+        val nums = Regex("-?\\d+").findAll(box).map { it.value.toInt() }.toList()
+        if (nums.size < 4) return null
+        val minX = nums[0]; val minY = nums[1]; val maxX = nums[2]; val maxY = nums[3]
+        if (minX > maxX || minY > maxY) return null
+        return GridPos((minX + maxX) / 2, (minY + maxY) / 2)
+    }
+
+    /**
+     * Load the occupancy mask and plan a route to [goal]. Done off the UI thread
+     * because parsing the ~1.6 MB mask and planning over a 1448x1086 grid is heavy.
+     */
+    private fun loadMapAndPlan(goal: GridPos, label: String?) {
         Thread {
             try {
                 val map = MaskNavMap.fromRawResource(applicationContext, R.raw.floor_plan_mask_labels)
-                val start = map.snapToTraversable(MaskNavMap.DEMO_START)
-                val goal = map.snapToTraversable(MaskNavMap.DEMO_GOAL)
-                val cells = VoronoiGridPlanner().plan(map.floor, start, goal) ?: emptyList()
-
-                // Decimate to keep per-frame path drawing light.
-                val step = maxOf(1, cells.size / 400)
-                val route = ArrayList<NavLocation>(cells.size / step + 1)
-                var i = 0
-                while (i < cells.size) { route.add(map.cellToLocation(cells[i])); i += step }
-                if (cells.isNotEmpty()) route.add(map.cellToLocation(cells.last()))
-
-                val t0 = System.currentTimeMillis()
-                val map25d = MaskMapRenderer.render25d(map)
-                val calibration = map.calibrationFor(map25d.width, map25d.height)
-
-                // 3D assets: extruded wall geometry + flat floor texture + route ribbon.
-                val routeCellsDecimated = ArrayList<com.blindvision.planning.GridPos>()
-                var k = 0
-                while (k < cells.size) { routeCellsDecimated.add(cells[k]); k += step }
-                if (cells.isNotEmpty()) routeCellsDecimated.add(cells.last())
-                val wallRects = WallMesher.wallRects(map.floor, dilate = 2)
-                val floor3d = MaskMapRenderer.render3dFloorTexture(map)
-
-                Log.i(
-                    WorldPoseConsumer.LOG_TAG,
-                    "Planned route: ${cells.size} cells start=$start goal=$goal " +
-                        "(assets ${System.currentTimeMillis() - t0} ms, " +
-                        "walls=${wallRects.size})"
-                )
-                runOnUiThread {
-                    loadingText.visibility = View.GONE
-                    navMap = map
-                    floorPlanView.setMapBitmaps(map25d, map25d, calibration)
-                    floorPlanView.setPath(route)
-                    map3dView.setData(floor3d, wallRects, routeCellsDecimated, map.cols, map.rows)
-                }
+                val start = routeStart(map)
+                val planned = planRoute(map, start, goal)
+                runOnUiThread { applyPlannedRoute(map, planned, goal, label) }
             } catch (e: Exception) {
                 Log.e(WorldPoseConsumer.LOG_TAG, "Route planning failed", e)
                 runOnUiThread {
@@ -127,15 +185,103 @@ class MainActivity : Activity() {
         }.start()
     }
 
+    private fun replanRoute(goal: GridPos, label: String) {
+        Thread {
+            try {
+                val map = navMap ?: return@Thread
+                val start = routeStart(map)
+                val planned = planRoute(map, start, goal)
+                runOnUiThread {
+                    resolving = false
+                    searchButton.isEnabled = true
+                    applyPlannedRoute(map, planned, goal, label)
+                    searchStatus.visibility = View.GONE
+                }
+            } catch (e: Exception) {
+                Log.e(WorldPoseConsumer.LOG_TAG, "Route replan failed", e)
+                runOnUiThread {
+                    resolving = false
+                    searchButton.isEnabled = true
+                    showSearchError(e.message ?: "Route planning failed.")
+                }
+            }
+        }.start()
+    }
+
+    private fun routeStart(map: MaskNavMap): GridPos {
+        val user = lastUserCell
+        return if (user != null) map.snapToTraversable(user) else map.snapToTraversable(MaskNavMap.DEMO_START)
+    }
+
+    private data class PlannedRoute(
+        val routeCellsDecimated: List<GridPos>,
+        val floor3d: Bitmap,
+        val wallRects: List<WallMesher.Rect>,
+        val cellCount: Int,
+        val start: GridPos,
+        val goal: GridPos,
+    )
+
+    private fun planRoute(map: MaskNavMap, start: GridPos, goal: GridPos): PlannedRoute {
+        val snappedGoal = map.snapToTraversable(goal)
+        val cells = VoronoiGridPlanner().plan(map.floor, start, snappedGoal) ?: emptyList()
+        val step = maxOf(1, cells.size / 400)
+        val routeCellsDecimated = ArrayList<GridPos>()
+        var k = 0
+        while (k < cells.size) { routeCellsDecimated.add(cells[k]); k += step }
+        if (cells.isNotEmpty()) routeCellsDecimated.add(cells.last())
+
+        val floor3d = cachedFloor3d ?: MaskMapRenderer.render3dFloorTexture(map).also { cachedFloor3d = it }
+        val wallRects = cachedWallRects.takeIf { it.isNotEmpty() }
+            ?: WallMesher.wallRects(map.floor, dilate = 2).also { cachedWallRects = it }
+
+        Log.i(
+            WorldPoseConsumer.LOG_TAG,
+            "Planned route: ${cells.size} cells start=$start goal=$snappedGoal"
+        )
+        return PlannedRoute(routeCellsDecimated, floor3d, wallRects, cells.size, start, snappedGoal)
+    }
+
+    private fun applyPlannedRoute(
+        map: MaskNavMap,
+        planned: PlannedRoute,
+        goal: GridPos,
+        label: String?,
+    ) {
+        loadingText.visibility = View.GONE
+        navMap = map
+        map3dView.setData(
+            planned.floor3d,
+            planned.wallRects,
+            planned.routeCellsDecimated,
+            map.cols,
+            map.rows,
+        )
+        map3dView.setDestination(planned.goal.x.toFloat(), planned.goal.y.toFloat())
+
+        if (label != null) {
+            destinationLabel.visibility = View.VISIBLE
+            destinationLabel.text = getString(R.string.destination_selected, label)
+        } else {
+            destinationLabel.visibility = View.GONE
+        }
+    }
+
+    private fun showSearchError(message: String) {
+        searchStatus.visibility = View.VISIBLE
+        searchStatus.setTextColor(0xFFC62828.toInt())
+        searchStatus.text = message
+    }
+
     override fun onResume() {
         super.onResume()
-        if (show3d) map3dView.onResume()
+        map3dView.onResume()
         maybeStart()
     }
 
     override fun onPause() {
         super.onPause()
-        if (show3d) map3dView.onPause()
+        map3dView.onPause()
         provider?.stop()
         provider = null
         started = false
@@ -219,41 +365,12 @@ class MainActivity : Activity() {
         }
     }
 
-    /** Switch between the flat 2.5D canvas map and the OpenGL 3D map. */
-    private fun toggle3d(button: View) {
-        show3d = !show3d
-        if (show3d) {
-            map3dView.visibility = View.VISIBLE
-            floorPlanView.visibility = View.GONE
-            map3dView.onResume()
-            recenterButton.visibility = View.GONE
-            button.contentDescription = "Showing 3D map — tap for 2.5D"
-        } else {
-            map3dView.visibility = View.GONE
-            floorPlanView.visibility = View.VISIBLE
-            map3dView.onPause()
-            recenterButton.visibility = View.VISIBLE
-            button.contentDescription = "Showing 2.5D map — tap for 3D"
-        }
-    }
-
-    private fun render(r: WorldPoseConsumer.Readout) {
-        // ARCore world frame is Y-up; adapt into the planner's z-up floor-plan
-        // convention so the dot lands in the plane of the floor plan and the
-        // height (ty) drives the floor index.
+    private fun updateUserOnMap(r: WorldPoseConsumer.Readout) {
         val location = NavLocation.fromArCore(r.tx, r.ty, r.tz)
-        // The view derives the travel-direction arrow from movement itself; we no
-        // longer pass device yaw (which pointed opposite to the direction of travel).
-        floorPlanView.setUserLocation(location)
         navMap?.let { m ->
             val cell = m.locationToCell(location)
             map3dView.setUser(cell[0], cell[1], 0f)
-        }
-
-        poseText.text = buildString {
-            append("floor ${floorPlanView.currentFloor()}  •  ${r.source}\n")
-            append("x=% .2f  y=% .2f  z=% .2f m\n".format(location.x, location.y, location.z))
-            append("yaw=% .0f°  speed=%.2f m/s".format(r.yawDeg, r.speedMetersPerSec))
+            lastUserCell = GridPos(cell[0].roundToInt(), cell[1].roundToInt())
         }
     }
 

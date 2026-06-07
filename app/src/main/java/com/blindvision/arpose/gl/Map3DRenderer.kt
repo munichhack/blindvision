@@ -37,6 +37,10 @@ class Map3DRenderer : GLSurfaceView.Renderer {
     @Volatile private var userRow = -1f
     @Volatile private var userHeading = 0f
 
+    // Destination pin (grid coords). Hidden until a destination is chosen.
+    @Volatile private var destCol = -1f
+    @Volatile private var destRow = -1f
+
     // Orbit camera state.
     @Volatile private var azimuth = 0.5f
     @Volatile private var elevation = (44.0 * PI / 180.0).toFloat()
@@ -60,10 +64,12 @@ class Map3DRenderer : GLSurfaceView.Renderer {
     private var pathCoreBuf: FloatBuffer? = null
     private var pathCasingBuf: FloatBuffer? = null
     private var markerBuf: FloatBuffer? = null
+    private var destMarkerBuf: FloatBuffer? = null
     private var wallVertCount = 0
     private var pathCoreCount = 0
     private var pathCasingCount = 0
     private var markerVertCount = 0
+    private var destMarkerVertCount = 0
 
     private val proj = FloatArray(16)
     private val view = FloatArray(16)
@@ -93,6 +99,16 @@ class Map3DRenderer : GLSurfaceView.Renderer {
         userHeading = headingRad
     }
 
+    fun setDestination(col: Float, row: Float) {
+        destCol = col
+        destRow = row
+    }
+
+    fun clearDestination() {
+        destCol = -1f
+        destRow = -1f
+    }
+
     fun orbitBy(dAzimuth: Float, dElevation: Float) {
         azimuth += dAzimuth
         elevation = (elevation + dElevation).coerceIn(0.2f, 1.45f)
@@ -103,7 +119,7 @@ class Map3DRenderer : GLSurfaceView.Renderer {
     }
 
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
-        GLES20.glClearColor(0.078f, 0.094f, 0.118f, 1f) // #14181E
+        GLES20.glClearColor(0.678f, 0.847f, 0.902f, 1f) // #ADD8E6 light blue
         GLES20.glEnable(GLES20.GL_DEPTH_TEST)
         GLES20.glDisable(GLES20.GL_CULL_FACE)
 
@@ -118,6 +134,7 @@ class Map3DRenderer : GLSurfaceView.Renderer {
         uSampler = GLES20.glGetUniformLocation(program, "uSampler")
 
         buildMarker()
+        buildDestMarker()
         // Force re-upload of texture/geometry on a fresh context.
         geometryDirty = true
     }
@@ -162,16 +179,27 @@ class Map3DRenderer : GLSurfaceView.Renderer {
             drawBuffer(buf, wallVertCount)
         }
 
-        // Route ribbon: white casing under a vivid blue core.
+        // Route ribbon: darker green casing under a bright green core.
         pathCasingBuf?.let { buf ->
             GLES20.glUniform1f(uUseTex, 0f)
-            GLES20.glUniform4f(uColor, 0.94f, 0.96f, 1.0f, 1f)
+            GLES20.glUniform4f(uColor, 0.08f, 0.55f, 0.25f, 1f) // #158040
             drawBuffer(buf, pathCasingCount)
         }
         pathCoreBuf?.let { buf ->
             GLES20.glUniform1f(uUseTex, 0f)
-            GLES20.glUniform4f(uColor, 0.149f, 0.471f, 1.0f, 1f) // #2678FF
+            GLES20.glUniform4f(uColor, 0.133f, 0.773f, 0.369f, 1f) // #22C55E
             drawBuffer(buf, pathCoreCount)
+        }
+
+        // Destination marker (pin).
+        if (destCol >= 0f && destMarkerBuf != null) {
+            Matrix.setIdentityM(model, 0)
+            Matrix.translateM(model, 0, wx(destCol), 0f, wz(destRow))
+            Matrix.multiplyMM(mvp, 0, vp, 0, model, 0)
+            GLES20.glUniformMatrix4fv(uMvp, 1, false, mvp, 0)
+            GLES20.glUniform1f(uUseTex, 0f)
+            GLES20.glUniform4f(uColor, 1.0f, 0.596f, 0.0f, 1f) // #FF9800 orange
+            drawBuffer(destMarkerBuf!!, destMarkerVertCount)
         }
 
         // User marker.
@@ -188,6 +216,7 @@ class Map3DRenderer : GLSurfaceView.Renderer {
     }
 
     private fun drawBuffer(buf: FloatBuffer, vertCount: Int) {
+        if (vertCount <= 0 || buf.capacity() == 0) return
         val stride = 8 * 4
         buf.position(0)
         GLES20.glEnableVertexAttribArray(aPos)
@@ -286,10 +315,48 @@ class Map3DRenderer : GLSurfaceView.Renderer {
             // top
             quad(data, x0, y1, z0, x0, y1, z1, x1, y1, z1, x1, y1, z0, 0f, 1f, 0f)
         }
+        if (data.isEmpty()) {
+            wallBuf = null
+            wallVertCount = 0
+            return
+        }
         val arr = FloatArray(data.size)
         for (i in data.indices) arr[i] = data[i]
         wallBuf = arr.toBuffer()
         wallVertCount = data.size / 8
+    }
+
+    private fun buildDestMarker() {
+        val ringR = 0.028f
+        val ringY = 0.012f
+        val seg = 24
+        val data = ArrayList<Float>()
+        // Flat ring on the floor.
+        for (i in 0 until seg) {
+            val a0 = (2 * PI * i / seg).toFloat()
+            val a1 = (2 * PI * (i + 1) / seg).toFloat()
+            val ix0 = ringR * 0.55f * cos(a0); val iz0 = ringR * 0.55f * sin(a0)
+            val ox0 = ringR * cos(a0); val oz0 = ringR * sin(a0)
+            val ix1 = ringR * 0.55f * cos(a1); val iz1 = ringR * 0.55f * sin(a1)
+            val ox1 = ringR * cos(a1); val oz1 = ringR * sin(a1)
+            quad(data, ox0, ringY, oz0, ox1, ringY, oz1, ix1, ringY, iz1, ix0, ringY, iz0, 0f, 1f, 0f)
+        }
+        // Upward pin cone.
+        val mr = 0.014f
+        val mh = 0.09f
+        val base = 0.018f
+        for (i in 0 until seg) {
+            val a0 = (2 * PI * i / seg).toFloat()
+            val a1 = (2 * PI * (i + 1) / seg).toFloat()
+            val bx0 = mr * cos(a0); val bz0 = mr * sin(a0)
+            val bx1 = mr * cos(a1); val bz1 = mr * sin(a1)
+            tri(data, 0f, mh, 0f, bx0, base, bz0, bx1, base, bz1)
+            tri(data, 0f, base, 0f, bx1, base, bz1, bx0, base, bz0)
+        }
+        val arr = FloatArray(data.size)
+        for (i in data.indices) arr[i] = data[i]
+        destMarkerBuf = arr.toBuffer()
+        destMarkerVertCount = data.size / 8
     }
 
     private fun buildMarker() {

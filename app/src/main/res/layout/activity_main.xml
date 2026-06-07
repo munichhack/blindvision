@@ -1,21 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- FloorPlanView fills the screen. ARCore needs a real, continuously rendering
+<!-- Map3DView fills the screen. ARCore needs a real, continuously rendering
      GL surface to stay in TRACKING; it is kept off-screen (same size, negative
      margins) so nothing visible covers the map. -->
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent">
 
-    <com.blindvision.arpose.nav.FloorPlanView
-        android:id="@+id/floor_plan"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent" />
-
     <com.blindvision.arpose.gl.Map3DView
         android:id="@+id/map_3d"
         android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:visibility="gone" />
+        android:layout_height="match_parent" />
 
     <android.opengl.GLSurfaceView
         android:id="@+id/gl_surface"
@@ -24,6 +18,73 @@
         android:layout_gravity="top|end"
         android:layout_marginTop="-180dp"
         android:layout_marginEnd="-132dp" />
+
+    <LinearLayout
+        android:id="@+id/search_panel"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top"
+        android:orientation="vertical"
+        android:paddingHorizontal="12dp"
+        android:paddingTop="12dp"
+        android:paddingBottom="8dp"
+        android:background="#E6FFFFFF"
+        android:elevation="8dp">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+
+            <EditText
+                android:id="@+id/search_input"
+                android:layout_width="0dp"
+                android:layout_height="48dp"
+                android:layout_weight="1"
+                android:background="@android:drawable/editbox_background_normal"
+                android:hint="@string/search_hint"
+                android:imeOptions="actionSearch"
+                android:inputType="text"
+                android:maxLines="1"
+                android:paddingHorizontal="12dp"
+                android:textColor="#111111"
+                android:textColorHint="#888888"
+                android:textSize="16sp" />
+
+            <ImageButton
+                android:id="@+id/search_button"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:layout_marginStart="8dp"
+                android:background="@drawable/recenter_button_bg"
+                android:contentDescription="@string/search_button_desc"
+                android:padding="12dp"
+                android:scaleType="centerInside"
+                android:src="@android:drawable/ic_menu_search" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/destination_label"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:paddingHorizontal="4dp"
+            android:textColor="#1565C0"
+            android:textSize="14sp"
+            android:fontFamily="sans-serif-medium"
+            android:visibility="gone" />
+
+        <TextView
+            android:id="@+id/search_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:paddingHorizontal="4dp"
+            android:textColor="#C62828"
+            android:textSize="13sp"
+            android:visibility="gone" />
+    </LinearLayout>
 
     <TextView
         android:id="@+id/loading_text"
@@ -36,45 +97,4 @@
         android:textColor="#FFFFFFFF"
         android:textSize="15sp"
         android:fontFamily="sans-serif-medium" />
-
-    <ImageButton
-        android:id="@+id/view_mode_button"
-        android:layout_width="48dp"
-        android:layout_height="48dp"
-        android:layout_gravity="bottom|end"
-        android:layout_marginEnd="16dp"
-        android:layout_marginBottom="168dp"
-        android:background="@drawable/recenter_button_bg"
-        android:contentDescription="Switch between 2.5D and 3D map"
-        android:elevation="6dp"
-        android:padding="12dp"
-        android:scaleType="centerInside"
-        android:src="@drawable/ic_view_3d" />
-
-    <ImageButton
-        android:id="@+id/recenter_button"
-        android:layout_width="48dp"
-        android:layout_height="48dp"
-        android:layout_gravity="bottom|end"
-        android:layout_marginEnd="16dp"
-        android:layout_marginBottom="112dp"
-        android:background="@drawable/recenter_button_bg"
-        android:contentDescription="Recenter on your location"
-        android:elevation="6dp"
-        android:padding="12dp"
-        android:scaleType="centerInside"
-        android:src="@drawable/ic_my_location" />
-
-    <TextView
-        android:id="@+id/pose_text"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_gravity="bottom|start"
-        android:layout_margin="16dp"
-        android:background="#CC101418"
-        android:padding="12dp"
-        android:textColor="#FFFFFFFF"
-        android:textSize="13sp"
-        android:fontFamily="monospace"
-        android:text="" />
 </FrameLayout>

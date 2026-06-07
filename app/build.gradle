@@ -13,6 +13,17 @@ android {
         targetSdk 35
         versionCode 1
         versionName "1.0"
+
+        def geminiKey = System.getenv("GEMINI_API_KEY")
+            ?: project.findProperty("GEMINI_API_KEY")
+            ?: readGeminiKeyFromDotEnv()
+            ?: ""
+        buildConfigField "String", "GEMINI_API_KEY", "\"${geminiKey}\""
+        buildConfigField "String", "GEMINI_MODEL", "\"gemini-3.1-flash-lite-preview\""
+    }
+
+    buildFeatures {
+        buildConfig true
     }
 
     buildTypes {
@@ -35,4 +46,14 @@ dependencies {
     // ARCore "Google Play Services for AR" client library. Provides Session,
     // Frame, Camera.getPose() — the source of world (6DoF) positions on device.
     implementation 'com.google.ar:core:1.48.0'
+}
+
+def readGeminiKeyFromDotEnv() {
+    def dotEnv = rootProject.file('.env')
+    if (!dotEnv.exists()) return null
+    for (line in dotEnv.readLines()) {
+        def m = line =~ /GEMINI_API_KEY=["']([^"']+)["']/
+        if (m.find()) return m.group(1)
+    }
+    return null
 }

@@ -1,4 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">BlindVision ARPose</string>
+    <string name="search_hint">Where do you want to go?</string>
+    <string name="search_button_desc">Search destination</string>
+    <string name="destination_selected">Destination: %1$s</string>
+    <string name="search_resolving">Finding destination…</string>
+    <string name="search_not_found">Could not find that destination.</string>
+    <string name="search_no_api_key">Gemini API key is not configured.</string>
 </resources>

@@ -63,8 +63,8 @@ object MaskMapRenderer {
     fun render25d(map: MaskNavMap): Bitmap = render(map)
 
     // Clean flat floor for the 3D view (no wood grain).
-    private val COLOR_FLOOR_3D = Color.parseColor("#ECEEF2")
-    private val COLOR_PORTAL_TILE = Color.parseColor("#DDE2EA")
+    private val COLOR_FLOOR_3D = Color.parseColor("#FFFACD") // light yellow
+    private val COLOR_PORTAL_TILE = Color.parseColor("#FFF3A0")
 
     /**
      * Floor texture for the OpenGL 3D view: a clean flat floor + subtle portal tiles,

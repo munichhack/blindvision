@@ -21,11 +21,11 @@ DILATE = int(sys.argv[5]) if len(sys.argv) > 5 else 2
 FOVY = 45.0
 W, H = 540, 1180
 
-FLOOR = np.array([0.925, 0.933, 0.949])
+FLOOR = np.array([1.0, 0.98, 0.804])       # #FFFACD light yellow
 WALL = np.array([0.255, 0.275, 0.318])
-PATH_CORE = np.array([0.149, 0.471, 1.0])
-PATH_CASE = np.array([0.94, 0.96, 1.0])
-BG = np.array([0.078, 0.094, 0.118])
+PATH_CORE = np.array([0.133, 0.773, 0.369])  # #22C55E green
+PATH_CASE = np.array([0.08, 0.55, 0.25])
+BG = np.array([0.678, 0.847, 0.902])         # #ADD8E6 light blue
 LIGHT = np.array([-0.4, 1.0, -0.55])
 LIGHT = LIGHT / np.linalg.norm(LIGHT)
 
